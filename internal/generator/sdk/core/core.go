@@ -115,7 +115,8 @@ func DoRequest(
 	}
 
 	// If we get a 429 (Too many requests) response code, lets wait and try again
-	if resp.StatusCode == 429 {
+	attemptLimit := 3
+	for resp.StatusCode == 429 {
 		// Ideally we will have a "Retry-After" header to tell us how long to wait
 		sleepTimeStr := resp.Header.Get("Retry-After")
 		var sleepTime int
@@ -128,18 +129,24 @@ func DoRequest(
 			// Without a header we will just do an exponential backoff
 			attemptCount := ctx.Value("attempts").(int)
 			// Give up after 5 attempts
-			if attemptCount > 5 {
-				goto handleResponse
+			if attemptCount > attemptLimit {
+				break
 			}
 			attemptCount++
 			sleepTime = int(math.Pow(2, float64(attemptCount)))
 			ctx = context.WithValue(ctx, "attempts", attemptCount)
 		}
 		time.Sleep(time.Duration(sleepTime) * time.Second)
-		return DoRequest(ctx, client, url, method, request, response, responseIsOptional, endpointHeaders, errorDecoder)
+
+		// re-make the request
+		resp, err = client.Do(req)
+		if err != nil {
+			return err
+		}
+		// Close the response body after we're done.
+		defer resp.Body.Close()
 	}
 
-handleResponse:
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		if errorDecoder != nil {
 			// This endpoint has custom errors, so we'll
