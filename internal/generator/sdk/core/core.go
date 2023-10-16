@@ -117,6 +117,9 @@ func DoRequest(
 	// If we get a 429 (Too many requests) response code, lets wait and try again
 	attemptLimit := 3
 	for resp.StatusCode == 429 {
+		// close the previous response body, the defer will catch whatever we are left with after looping
+		resp.Body.Close()
+
 		// Ideally we will have a "Retry-After" header to tell us how long to wait
 		sleepTimeStr := resp.Header.Get("Retry-After")
 		var sleepTime int
@@ -143,8 +146,6 @@ func DoRequest(
 		if err != nil {
 			return err
 		}
-		// Close the response body after we're done.
-		defer resp.Body.Close()
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
