@@ -10,6 +10,7 @@ import (
 	"math"
 	"net/http"
 	"strconv"
+	"sync"
 	"time"
 )
 
@@ -30,6 +31,53 @@ type APIError struct {
 	err error
 
 	StatusCode int `json:"-"`
+}
+
+type RateLimiter struct {
+	mutex sync.Mutex
+	wait  bool
+}
+
+func NewRateLimiter() *RateLimiter {
+	return &RateLimiter{}
+}
+
+func (r *RateLimiter) Block() {
+	// return early if already blocked
+	if r == nil || r.wait {
+		return
+	}
+
+	r.mutex.Lock()
+	defer r.mutex.Unlock()
+	r.wait = true
+}
+
+func (r *RateLimiter) UnBlock() {
+	// return early if already unblocked
+	if r == nil || !r.wait {
+		return
+	}
+
+	r.mutex.Lock()
+	defer r.mutex.Unlock()
+	r.wait = false
+}
+
+func (r *RateLimiter) Wait() {
+	if r != nil {
+		for {
+			r.mutex.Lock()
+			// wait for rate limit if needed
+			if r.wait {
+				r.mutex.Unlock()
+				time.Sleep(time.Second)
+			} else {
+				r.mutex.Unlock()
+				return
+			}
+		}
+	}
 }
 
 // NewAPIError constructs a new API error.
@@ -78,6 +126,7 @@ func DoRequest(
 	responseIsOptional bool,
 	endpointHeaders http.Header,
 	errorDecoder ErrorDecoder,
+	rateLimiter *RateLimiter,
 ) error {
 	var requestBody io.Reader
 	if request != nil {
@@ -100,6 +149,10 @@ func DoRequest(
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+
+	// Wait for rate limiter if needed
+	rateLimiter.Wait()
+
 	resp, err := client.Do(req)
 	if err != nil {
 		return err
@@ -115,37 +168,41 @@ func DoRequest(
 	}
 
 	// If we get a 429 (Too many requests) response code, lets wait and try again
-	attemptLimit := 3
-	for resp.StatusCode == 429 {
-		// close the previous response body, the defer will catch whatever we are left with after looping
-		resp.Body.Close()
+	if rateLimiter != nil {
+		attemptLimit := 3
+		var attemptCount int
+		for resp.StatusCode == 429 {
+			rateLimiter.Block()
+			// close the previous response body, the defer will catch whatever we are left with after looping
+			resp.Body.Close()
 
-		// Ideally we will have a "Retry-After" header to tell us how long to wait
-		sleepTimeStr := resp.Header.Get("Retry-After")
-		var sleepTime int
-		if sleepTimeStr != "" {
-			sleepTime, err = strconv.Atoi(sleepTimeStr)
+			// Ideally we will have a "Retry-After" header to tell us how long to wait
+			sleepTimeStr := resp.Header.Get("Retry-After")
+			var sleepTime int
+			if sleepTimeStr != "" {
+				sleepTime, err = strconv.Atoi(sleepTimeStr)
+				if err != nil {
+					return fmt.Errorf("found a 'Retry-After' header and atttempted to parse it to an integer but failed. err: %v", err)
+				}
+			} else {
+				// Without a header we will just do an exponential backoff
+				if attemptCount > attemptLimit {
+					// Give up after we hit the attempt limit
+					break
+				}
+				attemptCount++
+				sleepTime = int(math.Pow(2, float64(attemptCount)))
+			}
+			time.Sleep(time.Duration(sleepTime) * time.Second)
+
+			// re-make the request
+			resp, err = client.Do(req)
 			if err != nil {
-				return fmt.Errorf("found a 'Retry-After' header and atttempted to parse it to an integer but failed. err: %v", err)
+				return err
 			}
-		} else {
-			// Without a header we will just do an exponential backoff
-			attemptCount := ctx.Value("attempts").(int)
-			// Give up after 5 attempts
-			if attemptCount > attemptLimit {
-				break
-			}
-			attemptCount++
-			sleepTime = int(math.Pow(2, float64(attemptCount)))
-			ctx = context.WithValue(ctx, "attempts", attemptCount)
 		}
-		time.Sleep(time.Duration(sleepTime) * time.Second)
-
-		// re-make the request
-		resp, err = client.Do(req)
-		if err != nil {
-			return err
-		}
+		// unblock the rate limiter
+		rateLimiter.UnBlock()
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
