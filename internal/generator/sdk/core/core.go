@@ -34,12 +34,18 @@ type APIError struct {
 }
 
 type RateLimiter struct {
+	Limit int
 	mutex sync.Mutex
 	wait  bool
 }
 
-func NewRateLimiter() *RateLimiter {
-	return &RateLimiter{}
+func NewRateLimiter(limit *int) *RateLimiter {
+	// default limit is 3
+	newRateLimiter := RateLimiter{Limit: 3}
+	if limit != nil {
+		newRateLimiter.Limit = *limit
+	}
+	return &newRateLimiter
 }
 
 func (r *RateLimiter) Block() {
@@ -167,12 +173,15 @@ func DoRequest(
 		return err
 	}
 
-	// If we get a 429 (Too many requests) response code, lets wait and try again
-	if rateLimiter != nil {
-		attemptLimit := 3
+	// If we get a 429 (Too many requests) response code and have a rate limiter setup, block other request and retry
+	if rateLimiter != nil && resp.StatusCode == 429 {
+		// block other requests until we can finish processing this one
+		rateLimiter.Block()
+		defer rateLimiter.UnBlock()
+
+		attemptLimit := rateLimiter.Limit
 		var attemptCount int
 		for resp.StatusCode == 429 {
-			rateLimiter.Block()
 			// close the previous response body, the defer will catch whatever we are left with after looping
 			resp.Body.Close()
 
@@ -201,8 +210,6 @@ func DoRequest(
 				return err
 			}
 		}
-		// unblock the rate limiter
-		rateLimiter.UnBlock()
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
