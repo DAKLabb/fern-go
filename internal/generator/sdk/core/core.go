@@ -78,7 +78,6 @@ func DoRequest(
 	responseIsOptional bool,
 	endpointHeaders http.Header,
 	errorDecoder ErrorDecoder,
-	rateLimiter *RateLimiter,
 ) error {
 	var requestBody io.Reader
 	if request != nil {
@@ -101,7 +100,6 @@ func DoRequest(
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-
 	resp, err := client.Do(req)
 	if err != nil {
 		return err
