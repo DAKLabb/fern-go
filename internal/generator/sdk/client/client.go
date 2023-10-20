@@ -12,10 +12,9 @@ import (
 // ---
 
 type Client struct {
-	baseURL     string
-	httpClient  core.HTTPClient
-	header      http.Header
-	rateLimiter *core.RateLimiter
+	baseURL    string
+	httpClient core.HTTPClient
+	header     http.Header
 }
 
 func NewClient(opts ...core.ClientOption) *Client {
@@ -24,9 +23,8 @@ func NewClient(opts ...core.ClientOption) *Client {
 		opt(options)
 	}
 	return &Client{
-		baseURL:     options.BaseURL,
-		httpClient:  options.HTTPClient,
-		header:      options.ToHeader(),
-		rateLimiter: options.RateLimiter,
+		baseURL:    options.BaseURL,
+		httpClient: options.HTTPClient,
+		header:     options.ToHeader(),
 	}
 }
